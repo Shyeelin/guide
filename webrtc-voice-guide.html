@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>真不是蓋的</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <!-- FontAwesome 圖標 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Noto Sans TC', 'ui-sans-serif', 'system-ui', 'sans-serif']
+                    },
+                    colors: {
+                        ink: '#08111f',
+                        mint: '#2dd4bf',
+                        coral: '#fb7185',
+                        amberx: '#fbbf24'
+                    },
+                    boxShadow: {
+                        glow: '0 0 40px rgba(45, 212, 191, 0.22)',
+                        coral: '0 0 40px rgba(251, 113, 133, 0.22)'
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        :root {
+            color-scheme: dark;
+        }
+
+        body {
+            background:
+                radial-gradient(circle at top left, rgba(45, 212, 191, 0.26), transparent 28rem),
+                radial-gradient(circle at 85% 20%, rgba(251, 113, 133, 0.20), transparent 24rem),
+                linear-gradient(135deg, #07111f 0%, #111827 45%, #0f172a 100%);
+            letter-spacing: 0;
+        }
+
+        .glass {
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .pressable {
+            transition: transform 150ms ease, filter 150ms ease, box-shadow 150ms ease, background 150ms ease;
+        }
+
+        .pressable:active {
+            transform: translateY(1px) scale(0.985);
+            filter: brightness(0.95);
+        }
+
+        .signal-dot {
+            animation: pulse-dot 1.45s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { transform: scale(0.86); opacity: 0.62; }
+            50% { transform: scale(1.18); opacity: 1; }
+        }
+
+        .mic-wave span,
+        .equalizer span {
+            display: inline-block;
+            width: 0.38rem;
+            border-radius: 999px;
+            transform-origin: bottom;
+            animation: wave 1s ease-in-out infinite;
+        }
+
+        .mic-wave span {
+            background: linear-gradient(to top, #2dd4bf, #a7f3d0);
+            height: 1.3rem;
+        }
+
+        .equalizer span {
+            background: linear-gradient(to top, #fb7185, #fbbf24);
+            height: 1.65rem;
+        }
+
+        .mic-wave span:nth-child(2),
+        .equalizer span:nth-child(2) { animation-delay: 0.12s; }
+        .mic-wave span:nth-child(3),
+        .equalizer span:nth-child(3) { animation-delay: 0.24s; }
+        .mic-wave span:nth-child(4),
+        .equalizer span:nth-child(4) { animation-delay: 0.36s; }
+        .mic-wave span:nth-child(5),
+        .equalizer span:nth-child(5) { animation-delay: 0.48s; }
+
+        @keyframes wave {
+            0%, 100% { transform: scaleY(0.36); opacity: 0.55; }
+            50% { transform: scaleY(1); opacity: 1; }
+        }
+
+        .muted span,
+        .idle-bars span {
+            animation-play-state: paused;
+            transform: scaleY(0.22);
+            opacity: 0.35;
+        }
+
+        .toast-enter {
+            animation: toast-in 220ms ease-out;
+        }
+
+        @keyframes toast-in {
+            from { transform: translateY(-0.75rem); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .hidden-screen {
+            display: none !important;
+        }
+
+        input[type="range"] {
+            accent-color: #2dd4bf;
+        }
+    </style>
+</head>
+<body class="min-h-screen overflow-x-hidden text-slate-100">
+    <main class="mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
+        <header class="relative mb-5 flex min-h-[4.5rem] items-center justify-center px-12">
+            <button id="backBtn" class="pressable absolute left-0 top-1/2 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-white/10 text-slate-200" aria-label="返回角色選擇">
+                <i class="fa-solid fa-chevron-left"></i>
+            </button>
+            <div class="mx-auto w-full max-w-[16rem] text-center sm:max-w-xs">
+                <p class="text-[0.68rem] font-semibold uppercase leading-4 tracking-[0.16em] text-teal-200/80">Live Audio Guide</p>
+                <h1 class="mt-1 text-balance text-2xl font-bold leading-8 text-white sm:text-3xl">真不是蓋的</h1>
+            </div>
+        </header>
+
+        <!-- 角色選擇頁面 -->
+        <section id="roleScreen" class="flex flex-1 flex-col justify-center gap-6">
+            <div class="glass rounded-[2rem] p-6">
+                <div class="mb-6">
+                    <p class="text-sm text-slate-300">請選擇你這台手機的角色</p>
+                    <h2 class="mt-2 text-3xl font-bold leading-tight text-white">一人開播，多人即時收聽。</h2>
+                </div>
+
+                <div class="grid gap-4">
+                    <button id="chooseGuide" class="pressable rounded-2xl border border-white/10 bg-white/10 px-5 py-5 text-left text-white">
+                        <span class="flex items-center gap-3">
+                            <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/10">
+                                <i class="fa-solid fa-microphone-lines text-xl text-teal-200"></i>
+                            </span>
+                            <span>
+                                <span class="block text-lg font-bold">我是導覽員</span>
+                                <span class="mt-1 block text-sm font-medium text-slate-300">廣播手機麥克風語音</span>
+                            </span>
+                        </span>
+                    </button>
+
+                    <button id="chooseListener" class="pressable rounded-2xl bg-teal-400 px-5 py-5 text-left text-slate-950 shadow-glow">
+                        <span class="flex items-center gap-3">
+                            <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-950/10">
+                                <i class="fa-solid fa-headphones-simple text-xl"></i>
+                            </span>
+                            <span>
+                                <span class="block text-lg font-bold">我是聽眾</span>
+                                <span class="mt-1 block text-sm font-medium text-slate-800">輸入配對碼接收語音</span>
+                            </span>
+                        </span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 導覽員控制面板 -->
+        <section id="guideScreen" class="hidden-screen flex flex-1 flex-col gap-5 pt-1">
+            <div class="glass rounded-[2rem] p-5">
+                <p class="text-sm text-slate-300">頻道名稱</p>
+                <label for="channelNameInput" class="sr-only">自訂頻道名稱</label>
+                <input id="channelNameInput" maxlength="24" placeholder="例如：故宮上午團" class="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/45 px-4 py-4 text-lg font-bold text-white outline-none transition placeholder:text-slate-500 focus:border-teal-300/70">
+                <p id="guideChannelNameText" class="mt-3 text-sm text-slate-300">未命名頻道會自動使用預設名稱</p>
+            </div>
+
+            <div class="glass rounded-[2rem] p-5">
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <p class="text-sm text-slate-300">配對碼</p>
+                        <div id="roomCode" class="mt-2 font-mono text-5xl font-black tracking-[0.12em] text-teal-200">----</div>
+                    </div>
+                    <button id="copyCodeBtn" class="pressable flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white/10 text-teal-100" aria-label="複製配對碼">
+                        <i class="fa-regular fa-copy text-lg"></i>
+                    </button>
+                </div>
+                <div class="mt-5 flex items-center gap-2 rounded-2xl bg-white/10 px-4 py-3 text-sm text-slate-200">
+                    <span id="guideStatusDot" class="signal-dot h-2.5 w-2.5 rounded-full bg-amberx"></span>
+                    <span id="guideStatusText">準備建立導覽頻道</span>
+                </div>
+            </div>
+
+            <div class="glass rounded-[2rem] p-5">
+                <div class="flex items-center justify-between gap-4">
+                    <div>
+                        <p class="text-sm text-slate-300">麥克風</p>
+                        <h2 id="micStateText" class="mt-1 text-2xl font-bold text-white">尚未開播</h2>
+                    </div>
+                    <div id="micWave" class="mic-wave muted flex h-14 items-end gap-1.5 rounded-2xl bg-slate-950/35 px-4 py-3">
+                        <span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                </div>
+
+                <div class="mt-5">
+                    <div class="mb-2 flex items-center justify-between text-sm text-slate-300">
+                        <span>即時音量</span>
+                        <span id="volumeLabel">0%</span>
+                    </div>
+                    <div class="h-3 overflow-hidden rounded-full bg-white/10">
+                        <div id="volumeBar" class="h-full w-0 rounded-full bg-gradient-to-r from-teal-400 via-lime-300 to-amber-300 transition-[width] duration-75"></div>
+                    </div>
+                </div>
+
+                <button id="startGuideBtn" class="pressable mt-6 flex w-full items-center justify-center gap-3 rounded-2xl bg-white px-5 py-4 font-bold text-slate-950">
+                    <i class="fa-solid fa-tower-broadcast"></i>
+                    開始導覽
+                </button>
+
+                <button id="muteBtn" class="pressable mt-3 hidden w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/10 px-5 py-4 font-bold text-white">
+                    <i class="fa-solid fa-microphone-slash"></i>
+                    靜音
+                </button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div class="glass rounded-3xl p-4">
+                    <p class="text-sm text-slate-300">已連線聽眾</p>
+                    <p class="mt-2 text-4xl font-black text-white"><span id="listenerCount">0</span><span class="text-base font-semibold text-slate-400"> 人</span></p>
+                </div>
+                <div class="glass rounded-3xl p-4">
+                    <p class="text-sm text-slate-300">頻道狀態</p>
+                    <p id="broadcastState" class="mt-3 text-lg font-bold text-amber-200">待命中</p>
+                </div>
+            </div>
+
+            <button id="stopGuideBtn" class="pressable hidden w-full rounded-2xl bg-rose-500/90 px-5 py-4 font-bold text-white shadow-coral">
+                <i class="fa-solid fa-phone-slash mr-2"></i>結束導覽
+            </button>
+        </section>
+
+        <!-- 聽眾控制面板 -->
+        <section id="listenerScreen" class="hidden-screen flex flex-1 flex-col gap-5 pt-1">
+            <div class="glass rounded-[2rem] p-5">
+                <p class="text-sm text-slate-300">加入導覽</p>
+                <label for="joinCode" class="mt-2 block text-2xl font-bold text-white">輸入 4 位數配對碼</label>
+                <input id="joinCode" inputmode="numeric" maxlength="4" autocomplete="one-time-code" placeholder="0000" class="mt-5 w-full rounded-2xl border border-white/10 bg-slate-950/45 px-5 py-4 text-center font-mono text-4xl font-black tracking-[0.22em] text-white outline-none ring-0 transition focus:border-teal-300/70">
+                <button id="joinBtn" class="pressable mt-4 flex w-full items-center justify-center gap-3 rounded-2xl bg-teal-400 px-5 py-4 font-bold text-slate-950 shadow-glow">
+                    <i class="fa-solid fa-link"></i>
+                    加入導覽
+                </button>
+            </div>
+
+            <div id="listenerChannelCard" class="glass hidden rounded-[2rem] p-5">
+                <p class="text-sm text-slate-300">目前頻道</p>
+                <h2 id="listenerChannelNameText" class="mt-2 break-words text-2xl font-bold leading-8 text-white">等待頻道資訊</h2>
+            </div>
+
+            <div class="glass rounded-[2rem] p-5">
+                <div class="flex items-center justify-between gap-4">
+                    <div>
+                        <p class="text-sm text-slate-300">收聽狀態</p>
+                        <h2 id="listenerStatusText" class="mt-1 text-2xl font-bold text-white">尚未連線</h2>
+                    </div>
+                    <div id="equalizer" class="equalizer idle-bars flex h-14 items-end gap-1.5 rounded-2xl bg-slate-950/35 px-4 py-3">
+                        <span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                </div>
+
+                <button id="playBtn" class="pressable mt-6 hidden w-full items-center justify-center gap-3 rounded-2xl bg-white px-5 py-4 font-bold text-slate-950">
+                    <i class="fa-solid fa-play"></i>
+                    開始收聽
+                </button>
+
+                <div class="mt-6">
+                    <div class="mb-3 flex items-center justify-between">
+                        <label for="volumeSlider" class="text-sm text-slate-300">播放音量</label>
+                        <span id="listenVolumeLabel" class="text-sm font-semibold text-teal-100">80%</span>
+                    </div>
+                    <input id="volumeSlider" type="range" min="0" max="100" value="80" class="w-full">
+                </div>
+
+                <audio id="remoteAudio" playsinline></audio>
+                <audio id="joinSound" preload="auto" playsinline src="https://github.com/Shyeelin/guide/raw/refs/heads/main/in.mp3"></audio>
+            </div>
+
+            <button id="leaveBtn" class="pressable hidden w-full rounded-2xl bg-rose-500/90 px-5 py-4 font-bold text-white shadow-coral">
+                <i class="fa-solid fa-right-from-bracket mr-2"></i>離開導覽
+            </button>
+        </section>
+
+        <footer class="mt-6 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-center text-xs font-medium text-slate-400">
+            Made By Joshua Lin
+        </footer>
+    </main>
+
+    <!-- 客製化 Toast，不使用 alert() -->
+    <div id="toastHost" class="pointer-events-none fixed left-0 right-0 top-[max(1rem,env(safe-area-inset-top))] z-50 mx-auto flex w-full max-w-md flex-col gap-2 px-4"></div>
+
+    <script>
+        // ============================================================
+        // 真不是蓋的：即時網頁語音導覽系統
+        // 注意：行動裝置使用 getUserMedia 必須位於 HTTPS 或 localhost。
+        // ============================================================
+
+        const PEER_PREFIX = 'voice-guide-';
+        const JOIN_SOUND_URL = 'https://github.com/Shyeelin/guide/raw/refs/heads/main/in.mp3';
+        const MIC_CONSTRAINTS = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        };
+
+        const $ = (id) => document.getElementById(id);
+
+        const ui = {
+            backBtn: $('backBtn'),
+            roleScreen: $('roleScreen'),
+            guideScreen: $('guideScreen'),
+            listenerScreen: $('listenerScreen'),
+            chooseGuide: $('chooseGuide'),
+            chooseListener: $('chooseListener'),
+            channelNameInput: $('channelNameInput'),
+            guideChannelNameText: $('guideChannelNameText'),
+            roomCode: $('roomCode'),
+            copyCodeBtn: $('copyCodeBtn'),
+            guideStatusDot: $('guideStatusDot'),
+            guideStatusText: $('guideStatusText'),
+            startGuideBtn: $('startGuideBtn'),
+            stopGuideBtn: $('stopGuideBtn'),
+            muteBtn: $('muteBtn'),
+            micStateText: $('micStateText'),
+            micWave: $('micWave'),
+            volumeBar: $('volumeBar'),
+            volumeLabel: $('volumeLabel'),
+            listenerCount: $('listenerCount'),
+            broadcastState: $('broadcastState'),
+            joinCode: $('joinCode'),
+            joinBtn: $('joinBtn'),
+            listenerStatusText: $('listenerStatusText'),
+            listenerChannelCard: $('listenerChannelCard'),
+            listenerChannelNameText: $('listenerChannelNameText'),
+            equalizer: $('equalizer'),
+            playBtn: $('playBtn'),
+            volumeSlider: $('volumeSlider'),
+            listenVolumeLabel: $('listenVolumeLabel'),
+            remoteAudio: $('remoteAudio'),
+            joinSound: $('joinSound'),
+            leaveBtn: $('leaveBtn'),
+            toastHost: $('toastHost')
+        };
+
+        let role = null;
+        let roomCode = '';
+        let channelName = '真不是蓋的導覽';
+        let peer = null;
+        let localStream = null;
+        let remoteStream = null;
+        let audioContext = null;
+        let analyser = null;
+        let analyserData = null;
+        let analyserFrame = null;
+        let guideConnections = new Map();
+        let currentCall = null;
+        let listenerConnection = null;
+        let listenerJoinTimer = null;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        let isMuted = false;
+        let pendingListenerCode = '';
+
+        function showToast(message, type = 'info') {
+            const styles = {
+                info: 'border-teal-200/25 bg-teal-500/15 text-teal-50',
+                success: 'border-emerald-200/25 bg-emerald-500/15 text-emerald-50',
+                warn: 'border-amber-200/25 bg-amber-500/15 text-amber-50',
+                error: 'border-rose-200/25 bg-rose-500/15 text-rose-50'
+            };
+            const icons = {
+                info: 'fa-circle-info',
+                success: 'fa-circle-check',
+                warn: 'fa-triangle-exclamation',
+                error: 'fa-circle-xmark'
+            };
+            const toast = document.createElement('div');
+            toast.className = `toast-enter rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur-xl ${styles[type] || styles.info}`;
+            toast.innerHTML = `<div class="flex items-start gap-3 text-sm leading-6"><i class="fa-solid ${icons[type] || icons.info} mt-1"></i><span>${escapeHtml(message)}</span></div>`;
+            ui.toastHost.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(-0.5rem)';
+                toast.style.transition = 'opacity 180ms ease, transform 180ms ease';
+            }, 1000);
+            setTimeout(() => toast.remove(), 1200);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function setScreen(nextRole) {
+            role = nextRole;
+            ui.roleScreen.classList.toggle('hidden-screen', nextRole !== null);
+            ui.guideScreen.classList.toggle('hidden-screen', nextRole !== 'guide');
+            ui.listenerScreen.classList.toggle('hidden-screen', nextRole !== 'listener');
+            ui.backBtn.classList.toggle('hidden', nextRole === null);
+            ui.backBtn.classList.toggle('flex', nextRole !== null);
+        }
+
+        function generateRoomCode() {
+            return String(Math.floor(1000 + Math.random() * 9000));
+        }
+
+        function peerIdFromCode(code) {
+            return `${PEER_PREFIX}${code}`;
+        }
+
+        function createPeer(peerId) {
+            const nextPeer = new Peer(peerId, {
+                debug: 1,
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:global.stun.twilio.com:3478' }
+                    ]
+                }
+            });
+            wirePeerEvents(nextPeer);
+            return nextPeer;
+        }
+
+        function wirePeerEvents(nextPeer) {
+            nextPeer.on('open', (id) => {
+                if (nextPeer !== peer) return;
+                clearReconnect();
+                reconnectAttempts = 0;
+                if (role === 'guide') {
+                    setGuideStatus('ready', `${channelName} 已建立：${roomCode}`);
+                } else if (role === 'listener') {
+                    setListenerStatus('正在確認配對碼');
+                    connectToGuide(pendingListenerCode);
+                }
+            });
+
+            nextPeer.on('connection', (conn) => {
+                if (nextPeer !== peer) return;
+                if (role !== 'guide') return;
+                registerGuideConnection(conn);
+            });
+
+            nextPeer.on('call', (call) => {
+                if (nextPeer !== peer) return;
+                // 這個系統由導覽員主動呼叫聽眾；若聽眾收到 call，接起並等待語音流。
+                if (role === 'listener') {
+                    currentCall = call;
+                    setListenerStatus('收到導覽語音，等待播放');
+                    call.answer();
+                    call.on('stream', handleRemoteStream);
+                    call.on('close', () => handleListenerDisconnect('導覽語音已中斷'));
+                    call.on('error', () => handleListenerDisconnect('語音連線發生錯誤'));
+                }
+            });
+
+            nextPeer.on('disconnected', () => {
+                if (nextPeer !== peer) return;
+                if (role === 'guide') {
+                    setGuideStatus('reconnecting', '網路波動，正在嘗試重連');
+                } else if (role === 'listener') {
+                    setListenerStatus('網路波動，正在嘗試重連');
+                }
+                scheduleReconnect();
+            });
+
+            nextPeer.on('close', () => {
+                if (nextPeer !== peer) return;
+                if (role === 'guide') {
+                    setGuideStatus('offline', '導覽頻道已關閉');
+                } else if (role === 'listener') {
+                    setListenerStatus('連線已關閉');
+                }
+            });
+
+            nextPeer.on('error', (error) => {
+                if (nextPeer !== peer) return;
+                const message = normalizePeerError(error);
+                const shouldReconnect = error.type !== 'unavailable-id' && error.type !== 'peer-unavailable';
+                if (role === 'guide') {
+                    setGuideStatus('offline', message);
+                    showToast(message, 'error');
+                } else if (role === 'listener') {
+                    handleListenerDisconnect(message);
+                    if (!shouldReconnect) return;
+                } else {
+                    showToast(message, 'error');
+                }
+                if (shouldReconnect) {
+                    scheduleReconnect();
+                }
+            });
+        }
+
+        function normalizePeerError(error) {
+            if (!error) return '連線發生未知錯誤';
+            if (error.type === 'unavailable-id') return '這組配對碼剛好被使用，請重新產生';
+            if (error.type === 'peer-unavailable') return '找不到導覽員，請確認配對碼或導覽員是否已開播';
+            if (error.type === 'network') return '網路連線異常，正在嘗試恢復';
+            if (error.type === 'browser-incompatible') return '此瀏覽器不支援 WebRTC';
+            return error.message || '連線發生錯誤';
+        }
+
+        function scheduleReconnect() {
+            if (!peer || peer.destroyed || reconnectTimer) return;
+            if (reconnectAttempts >= 6) {
+                showToast('多次重連仍失敗，請重新整理頁面或重新加入導覽', 'warn');
+                return;
+            }
+            reconnectAttempts += 1;
+            const delay = Math.min(1200 * reconnectAttempts, 6500);
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                try {
+                    if (peer && !peer.destroyed && peer.disconnected) {
+                        peer.reconnect();
+                    }
+                } catch (error) {
+                    showToast('重連失敗，請稍後再試', 'error');
+                }
+            }, delay);
+        }
+
+        function clearReconnect() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+        }
+
+        function clearListenerJoinTimer() {
+            if (listenerJoinTimer) {
+                clearTimeout(listenerJoinTimer);
+                listenerJoinTimer = null;
+            }
+        }
+
+        function setGuideStatus(state, text) {
+            ui.guideStatusText.textContent = text;
+            ui.broadcastState.textContent = state === 'ready' ? '開播中' : state === 'reconnecting' ? '重連中' : state === 'offline' ? '已離線' : '待命中';
+            ui.guideStatusDot.className = 'signal-dot h-2.5 w-2.5 rounded-full';
+            const color = state === 'ready' ? 'bg-teal-300' : state === 'reconnecting' ? 'bg-amberx' : state === 'offline' ? 'bg-rose-400' : 'bg-amberx';
+            ui.guideStatusDot.classList.add(color);
+        }
+
+        function setListenerStatus(text) {
+            ui.listenerStatusText.textContent = text;
+        }
+
+        function getCleanChannelName() {
+            const typedName = ui.channelNameInput.value.trim().replace(/\s+/g, ' ').slice(0, 24);
+            return typedName || '真不是蓋的導覽';
+        }
+
+        function updateGuideChannelNameDisplay() {
+            const name = getCleanChannelName();
+            ui.guideChannelNameText.textContent = `頻道名稱：${name}`;
+        }
+
+        function updateListenerChannelNameDisplay(name) {
+            const displayName = (name || '真不是蓋的導覽').trim() || '真不是蓋的導覽';
+            ui.listenerChannelNameText.textContent = displayName;
+            ui.listenerChannelCard.classList.remove('hidden');
+        }
+
+        function sendChannelInfo(conn) {
+            if (!conn?.open) return;
+            conn.send({
+                type: 'channel-info',
+                name: channelName,
+                code: roomCode
+            });
+        }
+
+        function playJoinSound() {
+            if (!ui.joinSound) return;
+            ui.joinSound.src = JOIN_SOUND_URL;
+            ui.joinSound.volume = 0.7;
+            ui.joinSound.currentTime = 0;
+            const playPromise = ui.joinSound.play();
+            if (!playPromise?.catch) return;
+            playPromise.catch(() => {
+                // 部分手機瀏覽器可能會阻擋延遲播放；不影響主語音連線流程。
+            });
+        }
+
+        async function startGuide() {
+            if (!window.isSecureContext) {
+                showToast('目前不是安全來源。手機瀏覽器請使用 HTTPS，或在本機 localhost 測試。', 'warn');
+            }
+            ui.startGuideBtn.disabled = true;
+            ui.startGuideBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>準備麥克風中';
+
+            try {
+                channelName = getCleanChannelName();
+                ui.channelNameInput.value = channelName;
+                ui.channelNameInput.disabled = true;
+                updateGuideChannelNameDisplay();
+                localStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+                roomCode = generateRoomCode();
+                ui.roomCode.textContent = roomCode;
+                peer = createPeer(peerIdFromCode(roomCode));
+                setupMicMeter(localStream);
+                isMuted = false;
+                updateMuteUi();
+                ui.startGuideBtn.classList.add('hidden');
+                ui.muteBtn.classList.remove('hidden');
+                ui.stopGuideBtn.classList.remove('hidden');
+                ui.micWave.classList.remove('muted');
+                ui.micStateText.textContent = '收音中';
+                showToast('導覽已準備好，請讓聽眾輸入配對碼', 'success');
+            } catch (error) {
+                ui.channelNameInput.disabled = false;
+                ui.startGuideBtn.disabled = false;
+                ui.startGuideBtn.innerHTML = '<i class="fa-solid fa-tower-broadcast"></i>開始導覽';
+                showToast(getMicErrorMessage(error), 'error');
+                setGuideStatus('offline', '麥克風尚未啟用');
+            }
+        }
+
+        function getMicErrorMessage(error) {
+            if (!navigator.mediaDevices?.getUserMedia) return '此瀏覽器不支援麥克風存取';
+            if (error?.name === 'NotAllowedError') return '麥克風權限被拒絕，請到瀏覽器設定中允許麥克風';
+            if (error?.name === 'NotFoundError') return '找不到可用的麥克風裝置';
+            if (error?.name === 'NotReadableError') return '麥克風正被其他程式使用，請關閉後再試';
+            return '無法啟用麥克風，請確認權限與 HTTPS 環境';
+        }
+
+        function registerGuideConnection(conn) {
+            guideConnections.set(conn.peer, conn);
+            updateListenerCount();
+            conn.on('open', () => {
+                updateListenerCount();
+                sendChannelInfo(conn);
+                showToast('有聽眾加入導覽', 'success');
+                if (localStream) {
+                    const call = peer.call(conn.peer, localStream);
+                    attachGuideCallEvents(conn.peer, call);
+                }
+            });
+            conn.on('close', () => {
+                guideConnections.delete(conn.peer);
+                updateListenerCount();
+            });
+            conn.on('error', () => {
+                guideConnections.delete(conn.peer);
+                updateListenerCount();
+            });
+        }
+
+        function attachGuideCallEvents(listenerPeerId, call) {
+            call.on('close', () => {
+                guideConnections.delete(listenerPeerId);
+                updateListenerCount();
+            });
+            call.on('error', () => {
+                guideConnections.delete(listenerPeerId);
+                updateListenerCount();
+            });
+        }
+
+        function updateListenerCount() {
+            ui.listenerCount.textContent = String(guideConnections.size);
+        }
+
+        function setupMicMeter(stream) {
+            stopMicMeter();
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            analyser.smoothingTimeConstant = 0.78;
+            analyserData = new Uint8Array(analyser.frequencyBinCount);
+            source.connect(analyser);
+            drawMicMeter();
+        }
+
+        function drawMicMeter() {
+            if (!analyser) return;
+            analyser.getByteFrequencyData(analyserData);
+            const average = analyserData.reduce((sum, value) => sum + value, 0) / analyserData.length;
+            const level = Math.min(100, Math.round((average / 135) * 100));
+            ui.volumeBar.style.width = `${isMuted ? 0 : level}%`;
+            ui.volumeLabel.textContent = `${isMuted ? 0 : level}%`;
+            analyserFrame = requestAnimationFrame(drawMicMeter);
+        }
+
+        function stopMicMeter() {
+            if (analyserFrame) cancelAnimationFrame(analyserFrame);
+            analyserFrame = null;
+            analyser = null;
+            analyserData = null;
+            if (audioContext) {
+                audioContext.close().catch(() => {});
+                audioContext = null;
+            }
+            ui.volumeBar.style.width = '0%';
+            ui.volumeLabel.textContent = '0%';
+        }
+
+        function toggleMute() {
+            if (!localStream) return;
+            isMuted = !isMuted;
+            localStream.getAudioTracks().forEach((track) => {
+                track.enabled = !isMuted;
+            });
+            updateMuteUi();
+            showToast(isMuted ? '已靜音' : '已解除靜音', isMuted ? 'warn' : 'success');
+        }
+
+        function updateMuteUi() {
+            ui.micWave.classList.toggle('muted', isMuted || !localStream);
+            ui.micStateText.textContent = isMuted ? '已靜音' : localStream ? '收音中' : '尚未開播';
+            ui.muteBtn.innerHTML = isMuted
+                ? '<i class="fa-solid fa-microphone"></i>靜音解除'
+                : '<i class="fa-solid fa-microphone-slash"></i>靜音';
+        }
+
+        function stopGuide() {
+            guideConnections.forEach((conn) => conn.close());
+            guideConnections.clear();
+            updateListenerCount();
+            if (localStream) {
+                localStream.getTracks().forEach((track) => track.stop());
+                localStream = null;
+            }
+            stopMicMeter();
+            destroyPeer();
+            roomCode = '';
+            channelName = '真不是蓋的導覽';
+            ui.roomCode.textContent = '----';
+            ui.channelNameInput.disabled = false;
+            ui.channelNameInput.value = '';
+            ui.guideChannelNameText.textContent = '未命名頻道會自動使用預設名稱';
+            ui.startGuideBtn.disabled = false;
+            ui.startGuideBtn.innerHTML = '<i class="fa-solid fa-tower-broadcast"></i>開始導覽';
+            ui.startGuideBtn.classList.remove('hidden');
+            ui.muteBtn.classList.add('hidden');
+            ui.stopGuideBtn.classList.add('hidden');
+            ui.micWave.classList.add('muted');
+            ui.micStateText.textContent = '尚未開播';
+            setGuideStatus('idle', '準備建立導覽頻道');
+            showToast('導覽已結束', 'info');
+        }
+
+        function joinAsListener() {
+            const code = ui.joinCode.value.replace(/\D/g, '').slice(0, 4);
+            ui.joinCode.value = code;
+            if (code.length !== 4) {
+                showToast('請輸入 4 位數配對碼', 'warn');
+                return;
+            }
+
+            pendingListenerCode = code;
+            ui.joinBtn.disabled = true;
+            ui.joinBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>連線中';
+            setListenerStatus('連線中');
+
+            clearListenerJoinTimer();
+            if (listenerConnection) {
+                listenerConnection.close();
+                listenerConnection = null;
+            }
+            destroyPeer(false);
+            peer = createPeer();
+        }
+
+        function connectToGuide(code) {
+            if (!peer || !code) return;
+            const guideId = peerIdFromCode(code);
+            const conn = peer.connect(guideId, { reliable: true });
+            listenerConnection = conn;
+            clearListenerJoinTimer();
+            listenerJoinTimer = setTimeout(() => {
+                if (listenerConnection === conn && !conn.open) {
+                    conn.close();
+                    handleListenerDisconnect('找不到導覽員，請確認配對碼或導覽員是否已開播');
+                }
+            }, 3200);
+
+            conn.on('open', () => {
+                if (listenerConnection !== conn) return;
+                clearListenerJoinTimer();
+                setListenerStatus('已連線，等待導覽員語音');
+                ui.leaveBtn.classList.remove('hidden');
+                playJoinSound();
+                showToast('已加入導覽，收到語音後會自動開始播放', 'success');
+            });
+
+            conn.on('data', (data) => {
+                if (listenerConnection !== conn) return;
+                if (data?.type === 'channel-info') {
+                    updateListenerChannelNameDisplay(data.name);
+                }
+            });
+
+            conn.on('close', () => {
+                if (listenerConnection !== conn) return;
+                handleListenerDisconnect('已斷開連線');
+            });
+            conn.on('error', () => {
+                if (listenerConnection !== conn) return;
+                handleListenerDisconnect('連線失敗，請確認導覽員是否已開播');
+            });
+
+            // 若導覽員不存在，PeerJS 會透過 peer error 回報 peer-unavailable。
+        }
+
+        async function handleRemoteStream(stream) {
+            remoteStream = stream;
+            ui.remoteAudio.srcObject = stream;
+            ui.remoteAudio.volume = Number(ui.volumeSlider.value) / 100;
+            setListenerStatus('已收到語音，正在自動播放');
+            await startListening(true);
+        }
+
+        async function startListening(isAutoStart = false) {
+            if (!remoteStream) {
+                showToast('尚未收到導覽員語音，請稍候', 'warn');
+                return;
+            }
+            try {
+                await ui.remoteAudio.play();
+                ui.playBtn.classList.add('hidden');
+                ui.playBtn.classList.remove('flex');
+                ui.equalizer.classList.remove('idle-bars');
+                setListenerStatus('播放中');
+                showToast(isAutoStart ? '已自動開始播放導覽語音' : '開始播放導覽語音', 'success');
+            } catch (error) {
+                ui.playBtn.classList.remove('hidden');
+                ui.playBtn.classList.add('flex');
+                setListenerStatus('請點擊開始收聽');
+                showToast('瀏覽器需要你點擊「開始收聽」才能播放音訊', 'warn');
+            }
+        }
+
+        function handleListenerDisconnect(message) {
+            clearListenerJoinTimer();
+            setListenerStatus(message);
+            listenerConnection = null;
+            ui.listenerChannelCard.classList.add('hidden');
+            ui.listenerChannelNameText.textContent = '等待頻道資訊';
+            ui.equalizer.classList.add('idle-bars');
+            ui.playBtn.classList.add('hidden');
+            ui.leaveBtn.classList.add('hidden');
+            ui.joinBtn.disabled = false;
+            ui.joinBtn.innerHTML = '<i class="fa-solid fa-link"></i>加入導覽';
+            showToast(message, 'warn');
+        }
+
+        function leaveGuide() {
+            if (currentCall) {
+                currentCall.close();
+                currentCall = null;
+            }
+            if (listenerConnection) {
+                listenerConnection.close();
+                listenerConnection = null;
+            }
+            if (ui.remoteAudio.srcObject) {
+                ui.remoteAudio.pause();
+                ui.remoteAudio.srcObject = null;
+            }
+            remoteStream = null;
+            destroyPeer(false);
+            pendingListenerCode = '';
+            ui.listenerChannelCard.classList.add('hidden');
+            ui.listenerChannelNameText.textContent = '等待頻道資訊';
+            ui.joinBtn.disabled = false;
+            ui.joinBtn.innerHTML = '<i class="fa-solid fa-link"></i>加入導覽';
+            ui.playBtn.classList.add('hidden');
+            ui.leaveBtn.classList.add('hidden');
+            ui.equalizer.classList.add('idle-bars');
+            setListenerStatus('尚未連線');
+            showToast('已離開導覽', 'info');
+        }
+
+        function destroyPeer(resetReconnect = true) {
+            if (resetReconnect) clearReconnect();
+            if (peer && !peer.destroyed) {
+                peer.destroy();
+            }
+            peer = null;
+        }
+
+        function resetToRoleSelection() {
+            if (role === 'guide') stopGuide();
+            if (role === 'listener') leaveGuide();
+            setScreen(null);
+        }
+
+        async function copyRoomCode() {
+            if (!roomCode) {
+                showToast('尚未產生配對碼', 'warn');
+                return;
+            }
+            try {
+                await navigator.clipboard.writeText(roomCode);
+                showToast('配對碼已複製', 'success');
+            } catch (error) {
+                showToast(`配對碼是 ${roomCode}`, 'info');
+            }
+        }
+
+        ui.chooseGuide.addEventListener('click', () => {
+            setScreen('guide');
+            roomCode = '';
+            channelName = '真不是蓋的導覽';
+            ui.roomCode.textContent = '----';
+            ui.channelNameInput.disabled = false;
+            ui.channelNameInput.value = '';
+            ui.guideChannelNameText.textContent = '未命名頻道會自動使用預設名稱';
+            setGuideStatus('idle', '準備建立導覽頻道');
+        });
+
+        ui.chooseListener.addEventListener('click', () => {
+            setScreen('listener');
+            ui.joinCode.focus();
+        });
+
+        ui.backBtn.addEventListener('click', resetToRoleSelection);
+        ui.startGuideBtn.addEventListener('click', startGuide);
+        ui.stopGuideBtn.addEventListener('click', stopGuide);
+        ui.muteBtn.addEventListener('click', toggleMute);
+        ui.copyCodeBtn.addEventListener('click', copyRoomCode);
+        ui.joinBtn.addEventListener('click', joinAsListener);
+        ui.playBtn.addEventListener('click', startListening);
+        ui.leaveBtn.addEventListener('click', leaveGuide);
+        ui.channelNameInput.addEventListener('input', updateGuideChannelNameDisplay);
+
+        ui.joinCode.addEventListener('input', () => {
+            ui.joinCode.value = ui.joinCode.value.replace(/\D/g, '').slice(0, 4);
+        });
+
+        ui.joinCode.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') joinAsListener();
+        });
+
+        ui.volumeSlider.addEventListener('input', () => {
+            const volume = Number(ui.volumeSlider.value);
+            ui.listenVolumeLabel.textContent = `${volume}%`;
+            ui.remoteAudio.volume = volume / 100;
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (localStream) localStream.getTracks().forEach((track) => track.stop());
+            stopMicMeter();
+            destroyPeer();
+        });
+    </script>
+</body>
+</html>
