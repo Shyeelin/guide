@@ -290,7 +290,6 @@
                     <input id="volumeSlider" type="range" min="0" max="100" value="80" class="w-full">
                 </div>
 
-                <audio id="remoteAudio" playsinline></audio>
                 <audio id="joinSound" preload="auto" playsinline src="https://github.com/Shyeelin/guide/raw/refs/heads/main/in.mp3"></audio>
             </div>
 
@@ -315,6 +314,10 @@
 
         const PEER_PREFIX = 'voice-guide-';
         const JOIN_SOUND_URL = 'https://github.com/Shyeelin/guide/raw/refs/heads/main/in.mp3';
+        const AUDIO_PACKET_MS = 100;
+        const STREAM_SAMPLE_RATE = 16000;
+        const JITTER_BUFFER_SECONDS = 0.25;
+        const MAX_DATA_BUFFERED_AMOUNT = 512 * 1024;
         const MIC_CONSTRAINTS = {
             audio: {
                 echoCancellation: true,
@@ -356,7 +359,6 @@
             playBtn: $('playBtn'),
             volumeSlider: $('volumeSlider'),
             listenVolumeLabel: $('listenVolumeLabel'),
-            remoteAudio: $('remoteAudio'),
             joinSound: $('joinSound'),
             leaveBtn: $('leaveBtn'),
             toastHost: $('toastHost')
@@ -367,15 +369,23 @@
         let channelName = '真不是蓋的導覽';
         let peer = null;
         let localStream = null;
-        let remoteStream = null;
         let audioContext = null;
+        let micSource = null;
+        let audioProcessor = null;
+        let silentOutput = null;
+        let rawSampleBuffer = [];
+        let audioSequence = 0;
         let analyser = null;
         let analyserData = null;
         let analyserFrame = null;
         let guideConnections = new Map();
-        let currentCall = null;
         let listenerConnection = null;
         let listenerJoinTimer = null;
+        let listenerAudioContext = null;
+        let listenerGainNode = null;
+        let nextPlaybackTime = 0;
+        let lastAudioSequence = -1;
+        let hasStartedPacketPlayback = false;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         let isMuted = false;
@@ -460,19 +470,6 @@
                 if (nextPeer !== peer) return;
                 if (role !== 'guide') return;
                 registerGuideConnection(conn);
-            });
-
-            nextPeer.on('call', (call) => {
-                if (nextPeer !== peer) return;
-                // 這個系統由導覽員主動呼叫聽眾；若聽眾收到 call，接起並等待語音流。
-                if (role === 'listener') {
-                    currentCall = call;
-                    setListenerStatus('收到導覽語音，等待播放');
-                    call.answer();
-                    call.on('stream', handleRemoteStream);
-                    call.on('close', () => handleListenerDisconnect('導覽語音已中斷'));
-                    call.on('error', () => handleListenerDisconnect('語音連線發生錯誤'));
-                }
             });
 
             nextPeer.on('disconnected', () => {
@@ -654,10 +651,6 @@
                 updateListenerCount();
                 sendChannelInfo(conn);
                 showToast('有聽眾加入導覽', 'success');
-                if (localStream) {
-                    const call = peer.call(conn.peer, localStream);
-                    attachGuideCallEvents(conn.peer, call);
-                }
             });
             conn.on('close', () => {
                 guideConnections.delete(conn.peer);
@@ -669,17 +662,6 @@
             });
         }
 
-        function attachGuideCallEvents(listenerPeerId, call) {
-            call.on('close', () => {
-                guideConnections.delete(listenerPeerId);
-                updateListenerCount();
-            });
-            call.on('error', () => {
-                guideConnections.delete(listenerPeerId);
-                updateListenerCount();
-            });
-        }
-
         function updateListenerCount() {
             ui.listenerCount.textContent = String(guideConnections.size);
         }
@@ -687,13 +669,95 @@
         function setupMicMeter(stream) {
             stopMicMeter();
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioContext.createMediaStreamSource(stream);
+            micSource = audioContext.createMediaStreamSource(stream);
             analyser = audioContext.createAnalyser();
+            // ScriptProcessorNode 雖然較舊，但能直接放在單一 HTML 檔中使用。
+            // 這裡只取麥克風輸入，不輸出到喇叭，避免導覽員端產生回授。
+            audioProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+            silentOutput = audioContext.createGain();
+            silentOutput.gain.value = 0;
             analyser.fftSize = 256;
             analyser.smoothingTimeConstant = 0.78;
             analyserData = new Uint8Array(analyser.frequencyBinCount);
-            source.connect(analyser);
+            micSource.connect(analyser);
+            micSource.connect(audioProcessor);
+            audioProcessor.connect(silentOutput);
+            silentOutput.connect(audioContext.destination);
+            rawSampleBuffer = [];
+            audioSequence = 0;
+            audioProcessor.onaudioprocess = handleGuideAudioProcess;
             drawMicMeter();
+        }
+
+        function handleGuideAudioProcess(event) {
+            if (!localStream || guideConnections.size === 0) return;
+            const input = event.inputBuffer.getChannelData(0);
+            for (let index = 0; index < input.length; index += 1) {
+                rawSampleBuffer.push(input[index]);
+            }
+
+            const inputRate = audioContext.sampleRate;
+            const sourceSamplesPerPacket = Math.floor(inputRate * AUDIO_PACKET_MS / 1000);
+            while (rawSampleBuffer.length >= sourceSamplesPerPacket) {
+                const sourceChunk = rawSampleBuffer.splice(0, sourceSamplesPerPacket);
+                const downsampled = downsampleTo16k(sourceChunk, inputRate);
+                const pcmBuffer = floatToPcm16(downsampled);
+                broadcastAudioPacket(pcmBuffer);
+            }
+        }
+
+        function downsampleTo16k(samples, inputRate) {
+            if (inputRate === STREAM_SAMPLE_RATE) return samples;
+            const ratio = inputRate / STREAM_SAMPLE_RATE;
+            const outputLength = Math.max(1, Math.floor(samples.length / ratio));
+            const output = new Float32Array(outputLength);
+
+            // 使用平均值做簡單低通降採樣，降低資料量並減少粗糙混疊感。
+            for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
+                const start = Math.floor(outputIndex * ratio);
+                const end = Math.min(samples.length, Math.floor((outputIndex + 1) * ratio));
+                let sum = 0;
+                let count = 0;
+                for (let inputIndex = start; inputIndex < end; inputIndex += 1) {
+                    sum += samples[inputIndex];
+                    count += 1;
+                }
+                output[outputIndex] = count ? sum / count : 0;
+            }
+            return output;
+        }
+
+        function floatToPcm16(floatSamples) {
+            const pcm = new Int16Array(floatSamples.length);
+            for (let index = 0; index < floatSamples.length; index += 1) {
+                const sample = Math.max(-1, Math.min(1, floatSamples[index]));
+                pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+            }
+            return pcm.buffer;
+        }
+
+        function broadcastAudioPacket(pcmBuffer) {
+            const packet = {
+                type: 'audio-chunk',
+                seq: audioSequence,
+                sampleRate: STREAM_SAMPLE_RATE,
+                durationMs: AUDIO_PACKET_MS,
+                pcm: pcmBuffer
+            };
+            audioSequence += 1;
+
+            // DataChannel 廣播：同一份低位元率 PCM16 封包複製給所有聽眾。
+            // 相較媒體串流呼叫，這避免為每位聽眾建立獨立 WebRTC 音訊編碼/加密管線。
+            guideConnections.forEach((conn, peerId) => {
+                if (!conn.open) return;
+                if (conn.dataChannel?.bufferedAmount > MAX_DATA_BUFFERED_AMOUNT) return;
+                try {
+                    conn.send(packet);
+                } catch (error) {
+                    guideConnections.delete(peerId);
+                    updateListenerCount();
+                }
+            });
         }
 
         function drawMicMeter() {
@@ -711,6 +775,20 @@
             analyserFrame = null;
             analyser = null;
             analyserData = null;
+            rawSampleBuffer = [];
+            if (audioProcessor) {
+                audioProcessor.onaudioprocess = null;
+                audioProcessor.disconnect();
+                audioProcessor = null;
+            }
+            if (silentOutput) {
+                silentOutput.disconnect();
+                silentOutput = null;
+            }
+            if (micSource) {
+                micSource.disconnect();
+                micSource = null;
+            }
             if (audioContext) {
                 audioContext.close().catch(() => {});
                 audioContext = null;
@@ -776,6 +854,7 @@
             ui.joinBtn.disabled = true;
             ui.joinBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>連線中';
             setListenerStatus('連線中');
+            prepareListenerPlaybackFromGesture();
 
             clearListenerJoinTimer();
             if (listenerConnection) {
@@ -802,8 +881,12 @@
             conn.on('open', () => {
                 if (listenerConnection !== conn) return;
                 clearListenerJoinTimer();
-                setListenerStatus('已連線，等待導覽員語音');
+                setListenerStatus(listenerAudioContext?.state === 'running' ? '已連線，等待導覽員語音' : '請點擊開始收聽');
                 ui.leaveBtn.classList.remove('hidden');
+                if (listenerAudioContext?.state !== 'running') {
+                    ui.playBtn.classList.remove('hidden');
+                    ui.playBtn.classList.add('flex');
+                }
                 playJoinSound();
                 showToast('已加入導覽，收到語音後會自動開始播放', 'success');
             });
@@ -812,6 +895,10 @@
                 if (listenerConnection !== conn) return;
                 if (data?.type === 'channel-info') {
                     updateListenerChannelNameDisplay(data.name);
+                    return;
+                }
+                if (data?.type === 'audio-chunk') {
+                    handleAudioPacket(data);
                 }
             });
 
@@ -827,26 +914,14 @@
             // 若導覽員不存在，PeerJS 會透過 peer error 回報 peer-unavailable。
         }
 
-        async function handleRemoteStream(stream) {
-            remoteStream = stream;
-            ui.remoteAudio.srcObject = stream;
-            ui.remoteAudio.volume = Number(ui.volumeSlider.value) / 100;
-            setListenerStatus('已收到語音，正在自動播放');
-            await startListening(true);
-        }
-
         async function startListening(isAutoStart = false) {
-            if (!remoteStream) {
-                showToast('尚未收到導覽員語音，請稍候', 'warn');
-                return;
-            }
             try {
-                await ui.remoteAudio.play();
+                await resumeListenerAudio();
                 ui.playBtn.classList.add('hidden');
                 ui.playBtn.classList.remove('flex');
                 ui.equalizer.classList.remove('idle-bars');
-                setListenerStatus('播放中');
-                showToast(isAutoStart ? '已自動開始播放導覽語音' : '開始播放導覽語音', 'success');
+                setListenerStatus(hasStartedPacketPlayback ? '播放中' : '等待導覽員語音');
+                showToast(isAutoStart ? '已自動準備播放導覽語音' : '開始收聽中', 'success');
             } catch (error) {
                 ui.playBtn.classList.remove('hidden');
                 ui.playBtn.classList.add('flex');
@@ -855,10 +930,84 @@
             }
         }
 
+        function ensureListenerAudioContext() {
+            if (listenerAudioContext) return;
+            listenerAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            listenerGainNode = listenerAudioContext.createGain();
+            listenerGainNode.gain.value = Number(ui.volumeSlider.value) / 100;
+            listenerGainNode.connect(listenerAudioContext.destination);
+            nextPlaybackTime = 0;
+            lastAudioSequence = -1;
+            hasStartedPacketPlayback = false;
+        }
+
+        async function resumeListenerAudio() {
+            ensureListenerAudioContext();
+            if (listenerAudioContext.state === 'suspended') {
+                await listenerAudioContext.resume();
+            }
+        }
+
+        async function prepareListenerPlaybackFromGesture() {
+            try {
+                await resumeListenerAudio();
+            } catch (error) {
+                // 若瀏覽器仍擋住 AudioContext，等音訊封包抵達後顯示「開始收聽」備援按鈕。
+            }
+        }
+
+        async function handleAudioPacket(packet) {
+            if (!packet.pcm || packet.seq <= lastAudioSequence) return;
+            lastAudioSequence = packet.seq;
+            ensureListenerAudioContext();
+
+            if (listenerAudioContext.state !== 'running') {
+                setListenerStatus('請點擊開始收聽');
+                ui.playBtn.classList.remove('hidden');
+                ui.playBtn.classList.add('flex');
+                return;
+            }
+
+            const audioBuffer = pcm16ToAudioBuffer(packet.pcm, packet.sampleRate || STREAM_SAMPLE_RATE);
+            scheduleAudioBuffer(audioBuffer);
+            ui.equalizer.classList.remove('idle-bars');
+            setListenerStatus('播放中');
+        }
+
+        function pcm16ToAudioBuffer(arrayBuffer, sampleRate) {
+            const buffer = arrayBuffer instanceof ArrayBuffer
+                ? arrayBuffer
+                : arrayBuffer.buffer.slice(arrayBuffer.byteOffset, arrayBuffer.byteOffset + arrayBuffer.byteLength);
+            const pcm = new Int16Array(buffer);
+            const audioBuffer = listenerAudioContext.createBuffer(1, pcm.length, sampleRate);
+            const channel = audioBuffer.getChannelData(0);
+            for (let index = 0; index < pcm.length; index += 1) {
+                channel[index] = pcm[index] / 0x8000;
+            }
+            return audioBuffer;
+        }
+
+        function scheduleAudioBuffer(audioBuffer) {
+            const now = listenerAudioContext.currentTime;
+            if (!hasStartedPacketPlayback || nextPlaybackTime < now) {
+                // Jitter Buffer：第一次播放保留 250ms 緩衝，後續封包按上一段結尾時間銜接。
+                // 如果網路抖動造成排程時間落後，則重新從目前時間後方建立緩衝，避免破音堆疊。
+                nextPlaybackTime = now + JITTER_BUFFER_SECONDS;
+                hasStartedPacketPlayback = true;
+            }
+
+            const source = listenerAudioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(listenerGainNode);
+            source.start(nextPlaybackTime);
+            nextPlaybackTime += audioBuffer.duration;
+        }
+
         function handleListenerDisconnect(message) {
             clearListenerJoinTimer();
             setListenerStatus(message);
             listenerConnection = null;
+            resetListenerPlayback();
             ui.listenerChannelCard.classList.add('hidden');
             ui.listenerChannelNameText.textContent = '等待頻道資訊';
             ui.equalizer.classList.add('idle-bars');
@@ -870,19 +1019,11 @@
         }
 
         function leaveGuide() {
-            if (currentCall) {
-                currentCall.close();
-                currentCall = null;
-            }
             if (listenerConnection) {
                 listenerConnection.close();
                 listenerConnection = null;
             }
-            if (ui.remoteAudio.srcObject) {
-                ui.remoteAudio.pause();
-                ui.remoteAudio.srcObject = null;
-            }
-            remoteStream = null;
+            resetListenerPlayback();
             destroyPeer(false);
             pendingListenerCode = '';
             ui.listenerChannelCard.classList.add('hidden');
@@ -894,6 +1035,17 @@
             ui.equalizer.classList.add('idle-bars');
             setListenerStatus('尚未連線');
             showToast('已離開導覽', 'info');
+        }
+
+        function resetListenerPlayback() {
+            nextPlaybackTime = 0;
+            lastAudioSequence = -1;
+            hasStartedPacketPlayback = false;
+            if (listenerAudioContext) {
+                listenerAudioContext.close().catch(() => {});
+                listenerAudioContext = null;
+            }
+            listenerGainNode = null;
         }
 
         function destroyPeer(resetReconnect = true) {
@@ -945,7 +1097,7 @@
         ui.muteBtn.addEventListener('click', toggleMute);
         ui.copyCodeBtn.addEventListener('click', copyRoomCode);
         ui.joinBtn.addEventListener('click', joinAsListener);
-        ui.playBtn.addEventListener('click', startListening);
+        ui.playBtn.addEventListener('click', () => startListening(false));
         ui.leaveBtn.addEventListener('click', leaveGuide);
         ui.channelNameInput.addEventListener('input', updateGuideChannelNameDisplay);
 
@@ -960,12 +1112,15 @@
         ui.volumeSlider.addEventListener('input', () => {
             const volume = Number(ui.volumeSlider.value);
             ui.listenVolumeLabel.textContent = `${volume}%`;
-            ui.remoteAudio.volume = volume / 100;
+            if (listenerGainNode) {
+                listenerGainNode.gain.setTargetAtTime(volume / 100, listenerAudioContext.currentTime, 0.02);
+            }
         });
 
         window.addEventListener('beforeunload', () => {
             if (localStream) localStream.getTracks().forEach((track) => track.stop());
             stopMicMeter();
+            resetListenerPlayback();
             destroyPeer();
         });
     </script>
